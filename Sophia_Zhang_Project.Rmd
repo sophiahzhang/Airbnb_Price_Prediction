@@ -1,0 +1,856 @@
+---
+title: "DATA 200 Project: AirBnB Listing Price Analysis"
+author: "Sophia Zhang"
+date: "December 5th, 2020"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+## Introduction
+
+The topic of study for this paper is the sharing economy short term rental market, specifically within the Airbnb platform in the Cambridge, Massachusetts area. The objective of this analysis is to determine if a more experienced host (those with more listings) receive more reviews for their listings on average. In addition, the paper evaluates the impact of number of reviews on the listing price; whether it is positive or negative.
+
+The data used are taken from Inside Airbnb, an independent and non-commercial platform for Airbnb data analytics. The information contains different characteristics for all current listings in Cambridge, Massachusetts. Data for each listing include the location, frequency of booking, host details, property description, and cost. Variables that are of particular interest to this paper are: host listings count, listing price, and reviews (number of reviews, review scores rating). 
+
+Source: “Get the Data: Cambridge, Massachusetts, United States.” Inside Airbnb. October 26, 2020. http://insideairbnb.com/get-the-data.html.
+
+## Goals
+Answer question:
+Does a more experienced host (those with more listings) receive more reviews for their listings on average and do the reviews positively impact the price? 
+
+### Set directory 
+```{r}
+
+rm(list=ls()) 
+
+#Set working directory
+setwd('/Users/Sophia/Data200/Project')
+```
+
+### Load libraries
+```{r warning=FALSE}
+
+# List of all packages 
+load.lib<-c("tidyverse", "lubridate", "ggcorrplot","lattice","psych",
+"reshape2","car","caret","data.table","e1071","scales","stringr","gridGraphics","gridExtra","cowplot","lmtest","gvlma","mlbench")
+
+# Loop through the packages, check if not installed, if true, install with dependencies. 
+
+install.lib<-load.lib[!load.lib %in% installed.packages()]
+for(lib in install.lib) install.packages(lib,dependencies=TRUE)
+sapply(load.lib,require,character=TRUE)
+
+```
+
+Load libraries
+
+```{r}
+library(tidyverse)        # Import the tidyverse for a collection 
+library(lubridate)        # Work with dates
+library(ggcorrplot)       # Correlation plots in ggplot 
+library(lattice)          # Trelis graphics in R 
+library(psych)            # Package for common psychometric analyses
+library(reshape2)         # Reshape data 
+library(car)              # Companion to applied regression
+library(caret)            # A great classification package
+                          # Classification And REgression Training
+library(data.table)       # Good for reading in and viewing data 
+library(e1071)            # Misc. functions in statistics 
+library(scales)           # Good for scaling and converting data
+library(stringr)          # Stringi C library manipulation of text
+library(gridGraphics)     # Low-level graphics support
+library(gridExtra)        # Additional grid graphics functions
+library(cowplot)          # Added functions to ggplot 
+                          # Similar to ggpubr 
+library(lmtest)           # linear regression and diagnostics
+library(gvlma)            # Global validation of lm - Pena et al 2006
+library(mlbench)          # ML benchmarks from UCI 
+
+library(stargazer)        # Generates summary tables
+library(jtools)           # Generates regression summary tables
+
+```
+
+### Load data 
+
+
+```{r}
+
+#detailed Cambridge data
+#bnb_det <- readr::read_csv("listings_det.csv")
+
+#Main Airbnb data
+bnb_data <- readr::read_csv("listings.csv")
+```
+
+#### Explore data
+
+Look at columns and data. 
+
+```{r}
+head(bnb_data,4)
+
+print(names(bnb_data))
+
+```
+
+In this paper we want to generate a model of the price of AirBnB housing, using the other features as predictors, to address my question in the introduction above. 
+
+Target variable is **price** and rest of the variables are our features. 
+I will narrow down the variables for the specific model in later steps. 
+
+#### Clean the data 
+
+Drop the variables `name`, `host_id`, and `host_name`since they contain sensitive info. 
+Drop empty column neighbourhood_group (no data)
+
+```{r}
+#Reorgnize data
+
+bnb_sub <- bnb_data %>% dplyr::select(price, 
+                    id,
+                    neighbourhood,                 
+                    latitude, 
+                    longitude,                     
+                    room_type,
+                    minimum_nights, 
+                    number_of_reviews, 
+                    reviews_per_month,
+                    last_review, 
+                    calculated_host_listings_count,
+                    availability_365)
+head(bnb_sub, 4)
+
+```
+
+See some missing `NA` values, need to clean our data.
+
+```{r}
+#Count NAs
+sum(sapply(bnb_sub, is.na))
+```
+
+Missing values for date of last review was replaced by 0 to preserve the row data, since the date is not used as a control variable. A missing value for number of reviews was replaced by 0 since it indicates there are no reviews. 
+
+```{r}
+#Fix missing values
+
+bnb_sub <- bnb_sub %>% 
+  mutate(reviews_per_month = replace_na(reviews_per_month, 0))
+
+# Use gsub to replace - with "" to extract the number
+bnb_sub$last_review <- as.integer(gsub("-", "", bnb_sub$last_review))
+
+# Use the same mutate approach again 
+bnb_sub <- bnb_sub %>% 
+  mutate(last_review = replace_na(last_review, 0),)
+
+# Check that we have no missing values 
+paste0(sum(is.na(bnb_sub))) 
+
+```
+
+Check data types
+```{r}
+# Check data types
+sapply(bnb_sub, class)
+
+``` 
+
+Convert data types: character to factor
+```{r}
+# Change "neighbourhood","room_type" to factors, preferred to work in R
+
+# Store the columns you want in a list, can also use colnames()
+columns <- c("neighbourhood","room_type")
+
+# Use lapply to apply the as.factor command to all of the columns that match the select criteria 
+bnb_sub[, columns] <- bnb_sub %>% select(all_of(columns)) %>% lapply(as.factor)
+
+# Check to confirm columns are factors
+bnb_sub %>% select(all_of(columns)) %>% str()
+```
+
+
+```{r}
+unique(bnb_sub$neighbourhood)
+```
+
+Check data types have changed
+
+```{r}
+sapply(bnb_sub, class)
+```
+
+Look at availability in the year. There are some listings with 0 availability, want to remvove those.
+```{r}
+#Remove listings that have zero availability because they are not available for rent
+bnb_sub <- bnb_sub %>% filter(availability_365 != 0)
+```
+
+
+```{r}
+#Plot with ggplot
+avail_plot <- bnb_sub %>% 
+  ggplot(aes(availability_365)) + geom_histogram(col = "#00AFBB", fill='#52854C', bins = 50) +
+  labs(title = "Availability in a year (days) ", 
+       x = "Days", y = "Number of Rentals") +
+  geom_vline(xintercept=mean(bnb_sub$price), col='red',linetype = "dashed",size=1)+
+  theme_bw(base_size = 16) + scale_x_continuous()
+
+avail_plot
+```
+
+
+### Summary statistics table
+
+```{r}
+# Create Summary statistics table
+#Only select variables of interest that can be used, remove "latitude", "longitude",
+# Columns to select
+cols_num <- c("price",  "minimum_nights",'number_of_reviews','reviews_per_month','calculated_host_listings_count','availability_365')
+
+# Output to text file
+stargazer(as.data.frame(bnb_sub[,cols_num]), type = 'text', title = "Descriptive Statistics", digits = 3, out = "bnb_sub.txt")
+
+```
+
+
+### Visualize the data - price 
+
+Distribution of price data plot
+```{r}
+#Create output image file
+#png('bnb_price.png')
+
+#Plot with ggplot
+g <- bnb_sub %>% 
+  ggplot(aes(price)) + geom_histogram(col = "#00AFBB", fill='#52854C', bins = 50) +
+  labs(title = "Listing Price ($USD)", 
+       x = "Price, USD", y = "Number of Rentals") +
+  geom_vline(xintercept=mean(bnb_sub$price), col='red',linetype = "dashed",size=1)+
+  theme_bw(base_size = 16) + scale_x_continuous(labels = dollar)
+
+g
+
+```
+
+
+```{r}
+#Plot with ggplot
+#png('g1_2.png')
+
+g1_2 <- bnb_sub %>% 
+  ggplot(aes(log(price))) + geom_histogram(col = "#00AFBB", fill='#52854C', bins = 50) +
+  labs(title = "Listing Price (log normal)", 
+       x = "log Price", y = "Number of Rentals") +
+  theme_bw(base_size = 16) #+ scale_x_continuous(labels = dollar)
+
+g1_2
+```
+
+We may also wish to split the price data by neighbourhood. 
+
+```{r}
+
+g2 <- ggplot(bnb_sub, aes(fct_reorder(neighbourhood, price), price)) +
+  geom_boxplot(fill = "#00AFBB") + 
+ theme(axis.text.x = element_text(angle = 90),legend.position="none") +
+  labs(title = "Price by Neighborhood",
+       x = "", y = "Price, USD") + 
+  #theme_bw(base_size = 10) +
+  scale_y_continuous(labels = dollar)
+
+#png('bnb_g3.png')
+
+g3 <- bnb_sub %>% filter(price < 500) %>%
+ggplot(aes(fct_reorder(neighbourhood, price), price)) + 
+  geom_boxplot(fill = "#00AFBB") + 
+  theme(axis.text.x = element_text(angle = 90),legend.position="none") +
+  labs(title = "Price by Neighborhood, < $1000",
+       x = "", y = "Price, USD") + 
+  theme_bw(base_size = 10) +
+  scale_y_continuous(labels = dollar)
+
+# Organize the plots in one figure - gridExtra
+#library(cowplot)
+plot_grid(g2,g3, ncol = 1, nrow = 2)
+
+```
+
+It's clear there are a lot of outliers in this data. There are lots of ways to handle this. Let's look at a measure of the skewness. 
+
+```{r}
+# > 1 is strong right skew 
+skewness(bnb_sub$price)
+
+# Filter the cheaper ones 
+bnb_1k <- bnb_sub %>% filter(price < 1000)
+
+skewness(bnb_1k$price)
+```
+
+It's better when we remove the outliers
+
+We can try a Q-Q plot, another measure of normality. 
+
+```{r}
+qqnorm(bnb_sub$price);qqline(bnb_sub$price)
+
+qqnorm(bnb_1k$price); qqline(bnb_1k$price)
+```
+
+Both are still not normal. We can take log price as our outcome.
+
+```{r}
+# Create a new variable for log(price)
+bnb_sub <- bnb_sub %>% 
+  mutate(log_price = log(price))
+
+qqnorm(bnb_sub$log_price); qqline(bnb_sub$log_price)
+
+```
+The data is more normally distributed, but there are still some outliers.
+
+We can also remove those outlier prices. However, this has strong implications for the validity of our analysis. 
+
+We can filter into quantile ranges, as below: 
+
+```{r}
+
+# Find the quantiles 
+quant <- quantile(bnb_sub$price, probs=c(.25, .75), na.rm = T)
+# Find the IQR 
+iqr_sub <- IQR(bnb_sub$price, na.rm = T)
+
+bnb_sub2 <- bnb_sub %>% filter(price > (quant[1] - 1.5*iqr_sub) & 
+                       price < (quant[2] + 1.5*iqr_sub))  
+```
+
+
+### Compare the pre and post data 
+The log price is much more normally distributed now.
+```{r}
+boxplot(bnb_sub$log_price, col = "black", horizontal = T, 
+        main = "Price, USD - RAW")
+boxplot(bnb_sub2$log_price, col = "white", horizontal = T, 
+        main = "Price, USD - Removed Outliers")
+
+qqnorm(bnb_sub2$log_price); qqline(bnb_sub2$log_price)
+
+```
+
+```{r}
+boxplot(bnb_sub$price, col = "black", horizontal = T, 
+        main = "Price, USD - RAW")
+boxplot(bnb_sub2$price, col = "white", horizontal = T, 
+        main = "Price, USD - Removed Outliers")
+```
+```{r}
+# Create Summary statistics table
+#Only select variables of interest that can be used, remove "latitude", "longitude",
+# Columns to select
+cols_num <- c("log_price", "price", "minimum_nights",'number_of_reviews','reviews_per_month','calculated_host_listings_count','availability_365')
+
+# Output to text file
+stargazer(as.data.frame(bnb_sub2[,cols_num]), type = 'text', title = "Descriptive Statistics", digits = 3, out = "bnb_sub2.txt")
+```
+
+
+```{r}
+#png('bnb_g4.png')
+
+g4 <- ggplot(bnb_sub2, aes(fct_reorder(neighbourhood, price), price)) +
+  geom_boxplot(fill = "#00AFBB") + 
+ theme(axis.text.x = element_text(angle = 90),legend.position="none") +
+  labs(title = "Price by Neighborhood",
+       x = "", y = "Price, USD") + 
+  #theme_bw(base_size = 10) +
+  scale_y_continuous(labels = dollar)
+g4
+```
+
+
+```{r}
+#Look at host listings by neighborhood after removing outliers
+
+host_count2 <- ggplot(bnb_sub2, aes(fct_reorder(neighbourhood, calculated_host_listings_count), calculated_host_listings_count)) +
+  geom_boxplot(fill = "#52854C") + 
+  theme(axis.text.x = element_text(angle = 90),legend.position="none") +
+  labs(title = "Host Listings by Neighborhood",
+       x = "", y = "Number of Listings per Host")
+  #theme_bw(base_size = 10) 
+  #scale_y_continuous(labels = dollar)
+
+host_count2
+```
+
+```{r}
+host_price2 <- ggplot(bnb_sub2, aes(x=calculated_host_listings_count, y=log_price)) +
+  geom_point(col = "#00AFBB") + 
+  geom_smooth(method = "lm")+
+  #theme(axis.text.x = element_text(angle = 90),legend.position="none") +
+  labs(title = "Log Price vs Number Host Listings",
+       x = "Number of Listings per Host", y = "Log Price") + 
+  #theme_bw(base_size = 10) 
+  scale_y_continuous(labels = dollar)
+
+host_price2
+```
+
+```{r}
+host_review <- ggplot(bnb_sub2, aes(x=calculated_host_listings_count, y=reviews_per_month)) +
+  geom_point(col = "#00AFBB") + 
+  geom_smooth(method = "lm") +
+  #theme(axis.text.x = element_text(angle = 90),legend.position="none") +
+  labs(title = "Reviews per month by Host Listings",
+       x = "Number of Listings per Host", y = "Reviews per month") #+ 
+  #theme_bw(base_size = 10) 
+  #scale_y_continuous(labels = dollar)
+
+host_review
+```
+```{r}
+reviews_price <- ggplot(bnb_sub2, aes(x=number_of_reviews, y=log(price))) +
+  geom_point(col = "#00AFBB") + 
+  geom_smooth(method = "lm") +
+  #theme(axis.text.x = element_text(angle = 90),legend.position="none") +
+  labs(title = "Log Price vs Number of Reviews",
+       x = "Number of Reviews per Listing", y = "Log Price") + 
+  #theme_bw(base_size = 10) 
+  scale_y_continuous(labels = dollar)
+
+reviews_price
+```
+```{r}
+### Mapping prices using latitude and longitude
+
+#Map of prices
+
+cambridge_map <- ggplot(data = bnb_sub2, mapping = aes(x=longitude, y=latitude)) + geom_point(aes(color=price))
+
+cambridge_map
+```
+
+
+
+### Correlations 
+
+
+
+We can see how correlated variables are with others. 
+
+```{r}
+# Columns to select
+cols_corr <- c("price",  "neighbourhood", "room_type", "minimum_nights",'number_of_reviews','reviews_per_month','calculated_host_listings_count','availability_365','log_price')
+
+# Take the source data 
+c1 <- bnb_sub2[,cols_corr]
+#Make categorical variables numeric with assigned number code
+cols <- c("neighbourhood", "room_type")
+c1[, cols] <- c1 %>% select(all_of(cols)) %>% lapply(as.numeric)
+
+corr <- round(cor(c1, use="complete.obs"), 2)
+ggcorrplot(corr, lab = TRUE, colors = c("aquamarine", "white", "dodgerblue"), 
+           show.legend = T, outline.color = "gray", type = "upper", 
+           tl.cex = 15, lab_size = 3.5, sig.level = 0.1,
+          title = "Correlation Matrix") +
+  labs(fill = "Correlation") + 
+  theme(axis.text.x = element_text(size=10,margin=margin(-2,0,0,0)),  
+        axis.text.y = element_text(size=10,margin=margin(0,-2,0,0)),
+        panel.grid.major=element_blank())
+```
+
+Regression with relevant variables:
+The variables of interest in this paper is number of listings per host and number of reviews (we will use reviews per month), we want to see their effect on the price and evaluate if the variables are economically significant.
+Based on the results of initial correlation matrix, the neighbourhood and room type may also have an effect on price, so they are included in the linear regression.
+
+We can look deeper into these relationships with the `pairs.panels`.
+
+```{r}
+
+# Columns to select
+cols_sel <- c("log_price", "room_type", "reviews_per_month", "neighbourhood", "calculated_host_listings_count")
+
+# Extract from data 
+data_sel <- c1 %>% select(all_of(cols_sel))
+
+# Find correlation matrix 
+cor_sel <- cor(data_sel)
+
+pairs.panels(cor_sel, hist.col = 'grey', stars = T, cex.cor = .8)
+```
+
+We also can check for collinearity in the predictors, as below:
+
+```{r}
+# Remove the outcome 
+bnb_sub_pred <- subset(bnb_sub2, select = -c(price,log_price))
+
+# Remove all non-numerics 
+numeric_cols <- unlist(lapply(bnb_sub_pred, is.numeric)) # Logical vector of TRUE FALSE to include 
+bnb_sub_pred <- bnb_sub_pred[ , numeric_cols] # Classic slicing 
+
+# Find matrix of predictors only
+bnb_sub_cor <- cor(bnb_sub_pred)
+
+# Pass to findCorrelation with a cutoff of 0.7 
+cor_sub = findCorrelation(bnb_sub_cor, cutoff=0.7)
+
+# Select the columns which are above the cutoff 
+corsub_col = colnames(bnb_sub_pred)[cor_sub] 
+
+corsub_col # number of reviews is too highly correlated so we used reviews per month
+```
+
+
+### Linear Regression
+
+```{r}
+#Select variables for prediction
+
+bnb_sub2_2<-bnb_sub2%>%
+  select(price,log_price, room_type, reviews_per_month, neighbourhood, calculated_host_listings_count)%>%
+  mutate(entire_apt=ifelse(room_type=='Entire home/apt',1,0))%>%
+  mutate(private_room=ifelse(room_type=='Private room',1,0))
+```
+
+```{r}
+
+#Using data with outliers removed
+
+model <-lm(log_price ~ 
+          neighbourhood +                 
+          #latitude +  
+          #longitude +                      
+          #room_type +   
+          entire_apt+
+          private_room+
+          #minimum_nights + 
+          #number_of_reviews +            
+          #last_review + 
+          reviews_per_month +             
+          calculated_host_listings_count #+
+          #availability_365 +
+          #(room_type * latitude)
+          , 
+        data = bnb_sub2_2)
+
+#summary(model1)
+
+#Summary table
+jtools::export_summs(model, digits=3, to.file = 'xlsx', file.name = "Airbnb1.xlsx")
+
+```
+
+Hypothesis testing
+
+```{r}
+
+hyp0<-linearHypothesis(model,"calculated_host_listings_count") #test null hypotheses H0: b1=0
+hyp0
+hyp1<-linearHypothesis(model,c("calculated_host_listings_count","reviews_per_month")) #test joint significance
+hyp1
+
+hyp2<-linearHypothesis(model,"reviews_per_month") #test null hypotheses H0: b1=0
+hyp2
+
+```
+
+
+### Apply machine learning algorithm
+Create training and testing datasets
+```{r}
+#Using caret package
+set.seed(200010)
+
+inTrain <- createDataPartition(
+  y = bnb_sub2_2$log_price,
+  ## the outcome 
+  p = 0.75,
+  ## The percentage in training
+  list = FALSE
+)
+
+## The output is a set of integers for the rows of bnb_sub2
+## that belong in the training set.
+
+# Check the dimensions of the selection
+dim(bnb_sub2_2[as.vector(inTrain),])
+
+train_bnb <- bnb_sub2_2[as.vector(inTrain),]
+test_bnb <- bnb_sub2_2[-as.vector(inTrain),]
+
+```
+
+Apply the model on the training set. Ordinary least squares OLS regression.
+```{r}
+
+#Using data with outliers removed
+
+model1 <-lm(log_price ~ 
+          neighbourhood +                 
+          #latitude +  
+          #longitude +                      
+          #room_type +   
+          entire_apt+
+          private_room+
+          #minimum_nights + 
+          #number_of_reviews +            
+          #last_review + 
+          reviews_per_month +             
+          calculated_host_listings_count #+
+          #availability_365 +
+          #(room_type * latitude)
+          , 
+        data = train_bnb)
+
+#summary(model1)
+
+#Summary table
+jtools::export_summs(model1, digits=3, to.file = 'xlsx', file.name = "Airbnb.xlsx")
+```
+
+
+### Model diagnostics 
+
+```{r}
+par(mfrow = c(2,2)); plot(model1)
+```
+
+```{r}
+plot(model1, which = 3) # 3 = Scale-Location plot
+```
+
+
+### Model statistics 
+
+```{r}
+
+# Extract R2 from model output 
+paste0("Adjusted R-Squared = ", as.numeric(summary(model1)[9]))
+
+# Calculate MSE
+paste0("MSE = ", mean(model1$residuals^2))
+
+# Run an outlier test 
+outliers <- outlierTest(model1) # Provides a bonferroni p for each  
+paste0(outliers$signif," ", outliers$bonf.p)
+```
+
+
+### Testing data 
+
+Now we need to apply the same approach on the testing data, to see how it performs out of sample. 
+
+```{r}
+# Find predictions from our model on the test data
+predict_mod_1 <- predict(model1, newdata = test_bnb)
+
+# Find the RMSE of these predictions, given the observed prices 
+
+# Define a function for RMSE
+RMSE = function(predict_val, true_val){
+  sqrt(mean((predict_val - true_val)^2))
+}
+
+# Call the function 
+rmse = RMSE(predict_val = predict_mod_1, true_val = test_bnb$log_price)
+
+# Print it out 
+paste0("RMSE = ", rmse)
+```
+
+
+
+```{r}
+par(mfrow=c(1,1))
+plot(test_bnb$price, exp(predict_mod_1))
+
+#plot(test_bnb$log_price, predict_mod_1)
+```
+
+Plot the densities
+```{r}
+png('predict1.png')
+# Empirical data vs. Prediction 
+plot(density(test_bnb$price), xlab("Actual Price vs Predicted Price Data ($USD)"), ylim=c(0,0.015))
+# the prior prediction
+lines(density(exp(predict_mod_1)), col="red")
+```
+
+```{r}
+#Using caret package
+set.seed(200010)
+
+#Select variables for prediction
+
+bnb_sub3<-bnb_sub2%>%
+  select(log_price, room_type, reviews_per_month, neighbourhood, calculated_host_listings_count)
+
+
+inTrain <- createDataPartition(
+  y = bnb_sub3$log_price,
+  ## the outcome 
+  p = 0.75,
+  ## The percentage in training
+  list = FALSE
+)
+
+## The output is a set of integers for the rows of bnb_sub2
+## that belong in the training set.
+
+# Check the dimensions of the selection
+dim(bnb_sub3[as.vector(inTrain),])
+
+train_bnb3 <- bnb_sub3[as.vector(inTrain),]
+test_bnb3 <- bnb_sub3[-as.vector(inTrain),]
+```
+
+
+```{r}
+#C -Ridge regression 
+library(tree) 
+library(randomForest) 
+library(haven)
+library(glmnet)
+library(BBmisc)
+
+
+# Set up the hyperparameter, lambda - this is the strength of the penalty for each residual 
+lambdas <- 10^seq(3, -2, by = -.1) #
+
+# Find optimal lambda using cross-validation - running the model many times for different values of lambda
+cv_fit <- cv.glmnet(x=data.matrix(train_bnb3), y=train_bnb3$log_price, alpha = 0, lambda = lambdas)
+plot(cv_fit)
+
+# Fit the model using the glmnet() function
+fit <- glmnet(x=data.matrix(train_bnb3), y=train_bnb3$log_price, alpha = 0, lambda = lambdas) # Note that alpha is zero for the ridge 
+summary(fit)
+
+opt_lambda <- cv_fit$lambda.min
+print(opt_lambda)
+
+fit <- cv_fit$glmnet.fit
+summary(fit)
+
+train_pred_R <- predict(fit, s = opt_lambda, newx = data.matrix(train_bnb3))
+test_pred_R <- predict(fit, s = opt_lambda, newx = data.matrix(test_bnb3))
+
+# In sample predictions on training data
+# Find MSPE
+insample_R<-mean((train_pred_R-train_bnb3$log_price)^2)
+outsample_R<-mean((test_pred_R-test_bnb3$log_price)^2)
+# Find root MSPE
+insample_root_R<-sqrt(insample_R)
+outsample_root_R<-sqrt(outsample_R)
+#MSPE Summary
+print(data.frame(insample_root_R,outsample_root_R))
+
+
+```
+```{r}
+png('Ridge.png')
+# Empirical data vs. Prediction 
+plot(density(exp(test_bnb3$log_price)), xlab("Actual Price vs Predicted Price Data ($USD), Ridge Regression"), ylim=c(0,0.006))
+# the prior prediction
+lines(density(exp(test_pred_R)), col="red")
+```
+
+```{r}
+# rmse same as out of sample MSPE
+rmse_ridge = RMSE(predict_val = test_pred_R, true_val = test_bnb3$log_price)
+paste0("RMSE Ridge= ", rmse_ridge)
+# Print it out
+```
+
+
+```{r}
+#Random Forest 
+data3 <- bnb_sub3
+# Split using index
+n3 <- floor(0.50 * nrow(data3)) # 50% of data for training dataset
+
+# Select training data
+train_ind3 <- sample(seq_len(nrow(data3)), size = n3)
+data3_train <- data3[train_ind3, ]
+data3_test <- data3[-train_ind3, ]
+#train rf
+data3_train.rf<-randomForest(log_price~.,data=data3_train,ntree=1000,
+                             keep.forest=TRUE, importance=TRUE)
+imp_scaled_train <- importance(data3_train.rf, scale=TRUE) # Remember you may need to scale these values
+imp_unscaled_train <- data3_train.rf$importance
+plot(data3_train.rf)
+print(data3_train.rf)
+#test RF
+data3_test.rf<-randomForest(log_price~.,data=data3_test,ntree=1000,
+                             keep.forest=TRUE, importance=TRUE)
+imp_scaled_test <- importance(data3_test.rf, scale=TRUE) # Remember you may need to scale these values
+imp_unscaled_test <- data3_test.rf$importance
+plot(data3_test.rf)
+print(data3_test.rf)
+# In sample predictions on training data
+# Find MSPE
+insample_RF<-mean((data3_train.rf$predicted-data3_train$log_price)^2)
+outsample_RF<-mean((data3_test.rf$predicted-data3_test$log_price)^2)
+# Find root MSPE
+insample_root_RF<-sqrt(insample_RF)
+outsample_root_RF<-sqrt(outsample_RF)
+#MSPE Summary
+print(data.frame(insample_root_RF,outsample_root_RF))
+```
+Not as good as ridge regression
+```{r}
+# Empirical data vs. Prediction 
+plot(density(data3_test$log_price), xlab("Actual Data"), ylim=c(0,1.5))
+# the prior prediction
+lines(density(data3_test.rf$predicted), col="red")
+```
+
+```{r}
+#LASSO regression
+
+# To perform a lasso, we switch the alpha to 1, which is the default for glm
+cv_fit2 <- cv.glmnet(x=data.matrix(train_bnb3), y=train_bnb3$log_price, alpha = 1, lambda = lambdas)
+plot(cv_fit2)
+
+# Fit the model using the glmnet() function
+fit2 <- glmnet(x=data.matrix(train_bnb3), y=train_bnb3$log_price, alpha = 1, lambda = lambdas) # Note that alpha is zero for the ridge 
+summary(fit2)
+
+opt_lambda2 <- cv_fit2$lambda.min
+print(opt_lambda2)
+
+fit2 <- cv_fit2$glmnet.fit
+summary(fit2)
+
+train_pred_LA <- predict(fit2, s = opt_lambda2, newx = data.matrix(train_bnb3))
+test_pred_LA <- predict(fit2, s = opt_lambda2, newx = data.matrix(test_bnb3))
+
+# In sample predictions on training data
+# Find MSPE
+insample_LA<-mean((train_pred_LA-train_bnb3$log_price)^2)
+outsample_LA<-mean((test_pred_LA-test_bnb3$log_price)^2)
+# Find root MSPE
+insample_root_LA<-sqrt(insample_LA)
+outsample_root_LA<-sqrt(outsample_LA)
+#MSPE Summary
+print(data.frame(insample_root_LA,outsample_root_LA))
+```
+
+```{r}
+png('lASSO.png')
+
+# Empirical data vs. Prediction 
+plot(density(exp(test_bnb3$log_price)), xlab("Actual Price vs Predicted Price Data ($USD), LASSO Regression"), ylim=c(0,0.006))
+# the prior prediction
+lines(density(exp(test_pred_LA)), col="red")
+```
+
+```{r}
+# rmse same as out of sample MSPE
+rmse_lasso = RMSE(predict_val = test_pred_LA, true_val = test_bnb3$log_price)
+paste0("RMSE LASSO= ", rmse_lasso)
+# Print it out
+```
+
